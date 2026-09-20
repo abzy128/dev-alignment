@@ -1,10 +1,8 @@
-name = "github-alignment"
+name = "dev-alignment"
 main = "src/worker.ts"
 compatibility_date = "2025-10-01"
-account_id = "39c67c75a6dea6b31be9c3b1d026086e"
-workers_dev = false
+workers_dev = true
 
-routes = [{ pattern = "github-alignment.hona.dev", custom_domain = true }]
 
 [observability]
 enabled = true

@@ -117,7 +117,7 @@ export class Client {
         const token = session.userToken ?? (poolIdx >= 0 ? this.tokens[poolIdx] : undefined)
         const req = make()
         if (token) req.headers.set("authorization", `Bearer ${token}`)
-        req.headers.set("user-agent", "github-alignment")
+        req.headers.set("user-agent", "dev-alignment")
 
         const res = await fetch(req, { signal: AbortSignal.timeout(25_000) }).catch((e: Error) => e)
         if (res instanceof Error) {
