@@ -9,7 +9,7 @@ type Env = {
 
 /** Results live in Cloudflare's edge cache for a day; the handler decides fresh vs stale by `at`. */
 class EdgeStore implements Store {
-  private key = (login: string) => new Request(`https://cache.github-alignment.internal/${login}`)
+  private key = (login: string) => new Request(`https://cache.dev-alignment.internal/${login}`)
   async get(login: string) {
     const res = await caches.default.match(this.key(login))
     return res ? ((await res.json()) as Cached) : undefined

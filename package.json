@@ -1,17 +1,17 @@
 {
-  "name": "github-alignment",
+  "name": "dev-alignment",
   "version": "0.1.1",
-  "description": "Are you selfish or selfless on GitHub? One line, one dot.",
+  "description": "Explore your personal, company and external contributions on GitHub and GitLab.",
   "license": "MIT",
   "author": "Hona",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Hona/github-alignment.git"
+    "url": "git+https://github.com/abzy128/dev-alignment.git"
   },
-  "homepage": "https://github-alignment.hona.dev",
+  "homepage": "https://github.com/abzy128/dev-alignment#readme",
   "type": "module",
   "bin": {
-    "github-alignment": "dist/cli.js"
+    "dev-alignment": "dist/cli.js"
   },
   "files": [
     "dist"
@@ -23,9 +23,10 @@
     "build": "esbuild src/cli.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/cli.js --loader:.html=text --banner:js=\"#!/usr/bin/env node\"",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "cli": "node --experimental-strip-types src/cli.ts",
+    "cli": "npm run build --silent && node dist/cli.js",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "test": "node tests/run.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260918.1",

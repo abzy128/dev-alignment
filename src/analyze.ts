@@ -2,8 +2,10 @@ import { Session } from "./github.ts"
 
 export type Kind = "pr" | "issue" | "commit" | "sponsor"
 export type Item = { kind: Kind; repo: string; title: string; url: string; at: string }
-export type RepoInfo = { name: string; stars: number; forks: number; owned: boolean; dependency: boolean; sponsor: boolean }
+export type RepoInfo = { name: string; url?: string; stars: number; forks: number; owned: boolean; company?: boolean; dependency: boolean; sponsor: boolean }
 export type Analysis = {
+  provider?: "github" | "gitlab"
+  notes?: string[]
   login: string
   avatar: string
   orgs: string[]

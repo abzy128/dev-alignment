@@ -1,5 +1,5 @@
 import { analyze, type Analysis } from "./analyze.ts"
-import { Client, GitHubError, Semaphore, timeout, upstream } from "./github.ts"
+import { Client, GitHubError, Semaphore, upstream } from "./github.ts"
 
 export const FRESH_FOR = 60 * 60
 export const STALE_OK_FOR = 24 * 60 * 60
@@ -15,12 +15,16 @@ export interface Store {
 }
 
 export type Options = {
-  gh: Client
+  gh?: Client
+  provider?: "github" | "gitlab"
+  analyze?: (login: string) => Promise<Analysis>
   store: Store
   html: string
   publicOnly: boolean
   maxPages: number
   maxAnalyses?: number
+  /** Local analyses stay in MemoryStore, never in browser/shared HTTP caches. */
+  browserCache?: boolean
   /** Return false to refuse a fresh (uncached) analysis for this request. */
   allowFresh?: (req: Request) => Promise<boolean>
 }
@@ -58,14 +62,15 @@ function errorResponse(e: unknown) {
   )
 }
 
-function okResponse(cached: Cached, stale: boolean) {
+function okResponse(cached: Cached, stale: boolean, browserCache: boolean) {
   // Fresh answers are safe for a CDN to hold: a viral username should cost GitHub quota once.
   return json({ ...cached.value, cachedAt: cached.at, stale }, 200, {
-    "cache-control": stale ? "public, max-age=60" : "public, max-age=600, stale-while-revalidate=3600",
+    "cache-control": !browserCache ? "no-store" : stale ? "public, max-age=60" : "public, max-age=600, stale-while-revalidate=3600",
   })
 }
 
 export function createHandler(opts: Options) {
+  const browserCache = opts.publicOnly && (opts.browserCache ?? true)
   const analyses = new Semaphore(opts.maxAnalyses ?? 8)
   const inflight = new Map<string, Promise<Cached>>()
 
@@ -76,11 +81,12 @@ export function createHandler(opts: Options) {
     const p = (async () => {
       const release = await analyses.acquire(QUEUE_WAIT)
       try {
-        const gh = opts.gh.session()
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const work = opts.analyze ? opts.analyze(login) : analyze(opts.gh!.session(), login, { publicOnly: opts.publicOnly, maxPages: opts.maxPages })
         const value = await Promise.race([
-          analyze(gh, login, { publicOnly: opts.publicOnly, maxPages: opts.maxPages }),
-          new Promise<never>((_, reject) => setTimeout(() => reject(timeout()), ANALYSIS_TIMEOUT)),
-        ])
+          work,
+          new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new GitHubError("timeout", "Analysis took too long. Try again.", 30)), ANALYSIS_TIMEOUT))),
+        ]).finally(() => clearTimeout(timer))
         const cached = { at: Math.floor(Date.now() / 1000), value }
         await opts.store.set(login, cached)
         return cached
@@ -98,20 +104,23 @@ export function createHandler(opts: Options) {
     if (req.method !== "GET" && req.method !== "HEAD") return new Response("method not allowed", { status: 405 })
 
     if (url.pathname === "/") {
-      return new Response(opts.html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300" } })
+      return new Response(opts.html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": browserCache ? "public, max-age=300" : "no-store" } })
     }
     if (url.pathname === "/healthz") {
-      return json({ ok: true, tokens: opts.gh.tokenCount, publicOnly: opts.publicOnly, inflight: inflight.size, freeSlots: analyses.free })
+      return json({ ok: true, tokens: opts.gh?.tokenCount ?? 1, provider: opts.provider ?? "github", publicOnly: opts.publicOnly, inflight: inflight.size, freeSlots: analyses.free }, 200, { "cache-control": "no-store" })
     }
     const m = url.pathname.match(/^\/api\/([^/]+)$/)
     if (!m) return new Response("not found", { status: 404 })
 
-    const login = decodeURIComponent(m[1]).trim().replace(/^@/, "").toLowerCase()
-    if (!/^[a-z0-9-]{1,39}$/.test(login)) return json({ error: "that's not a GitHub username", code: "bad_login" }, 400)
+    let login: string
+    try { login = decodeURIComponent(m[1]).trim().replace(/^@/, "").toLowerCase() }
+    catch { return json({ error: "Invalid username encoding", code: "bad_login" }, 400) }
+    const valid = opts.provider === "gitlab" ? /^[a-z0-9_][a-z0-9_.-]{0,254}$/ : /^[a-z0-9-]{1,39}$/
+    if (!valid.test(login)) return json({ error: `that's not a ${opts.provider === "gitlab" ? "GitLab" : "GitHub"} username`, code: "bad_login" }, 400)
 
     const hit = await opts.store.get(login)
     const age = hit ? Date.now() / 1000 - hit.at : Infinity
-    if (hit && age <= FRESH_FOR) return okResponse(hit, false)
+    if (hit && age <= FRESH_FOR) return okResponse(hit, false, browserCache)
 
     // Joining an analysis someone else already started is free; only new work counts against the caller.
     if (!inflight.has(login) && opts.allowFresh && !(await opts.allowFresh(req))) {
@@ -119,10 +128,10 @@ export function createHandler(opts: Options) {
     }
 
     try {
-      return okResponse(await run(login), false)
+      return okResponse(await run(login), false, browserCache)
     } catch (e) {
       // GitHub is unhappy but we remember an older answer: better than an error page.
-      if (hit && age <= STALE_OK_FOR && !(e instanceof GitHubError && e.code === "not_found")) return okResponse(hit, true)
+      if (hit && age <= STALE_OK_FOR && !(e instanceof GitHubError && e.code === "not_found")) return okResponse(hit, true, browserCache)
       if (!(e instanceof GitHubError)) console.error(e)
       return errorResponse(e)
     }
