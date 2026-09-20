@@ -9,8 +9,11 @@
   * { box-sizing:border-box }
   html,body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace }
   main { max-width:640px; margin:0 auto; padding:64px 20px 96px }
-  form { display:flex; gap:8px }
-  input { flex:1; background:transparent; border:0; border-bottom:1px solid var(--line); color:var(--fg); font:inherit; font-size:22px; padding:8px 0; outline:0 }
+  form { display:flex; gap:8px; flex-wrap:wrap }
+  input { flex:1; min-width:0; background:transparent; border:0; border-bottom:1px solid var(--line); color:var(--fg); font:inherit; font-size:22px; padding:8px 0; outline:0 }
+  .period { flex-basis:100%; display:flex; align-items:center; gap:12px; margin-top:12px; color:var(--dim); font-size:12px }
+  select { background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:4px; padding:8px 12px; font:inherit; color-scheme:dark }
+  select:focus-visible { outline:2px solid var(--fg); outline-offset:2px }
   input:focus { border-color:var(--fg) }
   button { background:var(--fg); color:var(--bg); border:0; font:inherit; padding:0 18px; cursor:pointer; border-radius:4px }
   button:disabled { opacity:.4; cursor:progress }
@@ -27,7 +30,7 @@
   .read { text-align:center; margin:40px 0 8px; font-size:44px; font-weight:600; letter-spacing:-.02em }
   .read small { display:block; font-size:13px; color:var(--dim); font-weight:400; letter-spacing:0; margin-top:6px }
   h2 { font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); font-weight:400; margin:56px 0 16px }
-  .repo { display:grid; grid-template-columns: 1fr 120px; gap:16px; align-items:center; padding:10px 0; border-top:1px solid var(--line) }
+  .repo { display:grid; grid-template-columns: minmax(0, 1fr) 120px; gap:16px; align-items:center; padding:10px 0; border-top:1px solid var(--line) }
   .repo .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
   .repo .name a { color:inherit; text-decoration:none } .repo .name a:hover { text-decoration:underline }
   .repo .meta { color:var(--dim); font-size:12px; margin-top:2px; display:flex; gap:10px; flex-wrap:wrap }
@@ -64,6 +67,14 @@
   <form id="f">
     <input id="login" placeholder="github username" autocomplete="off" autofocus />
     <button id="go">go</button>
+    <label class="period" for="period">period
+      <select id="period" name="days">
+        <option value="7">1 week</option>
+        <option value="30">1 month</option>
+        <option value="90" selected>3 months</option>
+        <option value="365">1 year</option>
+      </select>
+    </label>
   </form>
   <div id="status"></div>
   <p id="notes" class="stale"></p>
@@ -95,7 +106,7 @@
       <summary>tweak the algorithm</summary>
       <div class="knobs" id="knobs"></div>
       <div class="legend">
-        last 90 days. each contribution gets a <b>selflessness</b> 0→1 based on who it was for:<br>
+        selected period. each contribution gets a <b>selflessness</b> 0→1 based on who it was for:<br>
         <b>sponsor</b> someone → 1<br>
         PR/issue to a repo <b>your code depends on</b> → 1<br>
         anyone else's repo → <b>external base</b>, higher if it's popular<br>
@@ -145,10 +156,10 @@ const selflessness = (r) => {
 }
 const color = (s) => `color-mix(in oklab, var(--self) ${(1 - s) * 100}%, var(--less))`
 
-// Alignment over the window: a 14-day rolling weighted mean, sampled 60 times. Sponsorships
+// Alignment over the window: a rolling mean of up to 14 days, sampled 60 times. Sponsorships
 // have no date so they're left out here.
 function sparkline() {
-  const W = 240, H = 40, PAD = 4, N = 60, SPAN = 14 * 864e5
+  const W = 240, H = 40, PAD = 4, N = 60, SPAN = Math.min(14, data.window.days) * 864e5
   const dated = data.items.filter((i) => i.at && k[i.kind] > 0)
     .map((i) => ({ t: Date.parse(i.at), w: k[i.kind], s: selflessness(data.repos[i.repo]) }))
   const end = Date.now(), start = end - data.window.days * 864e5
@@ -232,18 +243,21 @@ $("f").onsubmit = async (e) => {
   clearInterval(retryTimer)
   const login = $("login").value.trim()
   if (!login) return
+  const days = $("period").value
   $("go").disabled = true
-  $("status").textContent = provider === "gitlab" ? "reading your last 90 days of merge requests and issues…" : "reading your last 90 days of PRs, issues, commits, plus your deps and sponsorships…"
+  $("period").disabled = true
+  $("result").classList.remove("on")
+  $("notes").textContent = ""
+  $("status").textContent = provider === "gitlab" ? `reading your last ${days} days of merge requests and issues…` : `reading your last ${days} days of PRs, issues, commits, plus your deps and sponsorships…`
   $("status").className = ""
   try {
-    const res = await fetch(`/api/${encodeURIComponent(login)}?v=3`, { cache: provider === "gitlab" ? "no-store" : "default" })
+    const res = await fetch(`/api/${encodeURIComponent(login)}?v=4&days=${days}`, { cache: provider === "gitlab" ? "no-store" : "default" })
     const json = await res.json().catch(() => ({ error: `server said ${res.status}`, code: "server" }))
     if (json.error) {
       if (json.code === "rate_limited" || json.code === "busy") $("local").classList.add("loud")
       if (json.code === "rate_limited" && json.retryAfter <= 120) scheduleRetry(json.retryAfter)
       else $("status").textContent = json.error
       $("status").className = "err"
-      $("go").disabled = false
       return
     }
     data = json
@@ -262,12 +276,22 @@ $("f").onsubmit = async (e) => {
     $("status").textContent = ""
     $("result").classList.add("on")
     render()
-    history.replaceState(null, "", `?u=${encodeURIComponent(data.login)}`)
+    history.replaceState(null, "", `?u=${encodeURIComponent(data.login)}&days=${data.window.days}`)
   } catch (err) {
     $("status").textContent = err.message
     $("status").className = "err"
+  } finally {
+    $("go").disabled = false
+    $("period").disabled = false
   }
-  $("go").disabled = false
+}
+
+$("period").onchange = () => {
+  clearInterval(retryTimer)
+  const params = new URLSearchParams(location.search)
+  params.set("days", $("period").value)
+  history.replaceState(null, "", `?${params}`)
+  if ($("login").value.trim()) $("f").requestSubmit()
 }
 
 $("cmd").onclick = () => navigator.clipboard?.writeText($("cmd").textContent)
@@ -283,10 +307,13 @@ async function init() {
       knobs.children[2].hidden = true
       knobs.children[3].hidden = true
       $("knob-companyBase").hidden = false
-      document.querySelector(".legend").textContent = "Last 90 days of merge requests and issues. Group namespaces count as company/team work with a base score of 0.8, adjustable above, increasing with popularity. Only your personal namespace uses the owned cap and scales from zero with stars and forks. Other users' personal projects receive the external base score. Group classification is a heuristic, independent of membership or role. Commits, dependencies and sponsorships are unavailable."
+      document.querySelector(".legend").textContent = "Merge requests and issues in the selected period. Group namespaces count as company/team work with a base score of 0.8, adjustable above, increasing with popularity. Only your personal namespace uses the owned cap and scales from zero with stars and forks. Other users' personal projects receive the external base score. Group classification is a heuristic, independent of membership or role. Commits, dependencies and sponsorships are unavailable."
     }
   } catch {}
-  const u = new URLSearchParams(location.search).get("u")
+  const params = new URLSearchParams(location.search)
+  const days = params.get("days")
+  if ([...$("period").options].some((o) => o.value === days)) $("period").value = days
+  const u = params.get("u")
   if (u) { $("login").value = u; $("f").requestSubmit() }
 }
 init()

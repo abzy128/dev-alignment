@@ -1,4 +1,4 @@
-import { analyze, type Analysis } from "./analyze.ts"
+import { analyze, PERIOD_DAYS, WINDOW_DAYS, type Analysis, type PeriodDays } from "./analyze.ts"
 import { Client, GitHubError, Semaphore, upstream } from "./github.ts"
 
 export const FRESH_FOR = 60 * 60
@@ -17,7 +17,7 @@ export interface Store {
 export type Options = {
   gh?: Client
   provider?: "github" | "gitlab"
-  analyze?: (login: string) => Promise<Analysis>
+  analyze?: (login: string, days: PeriodDays) => Promise<Analysis>
   store: Store
   html: string
   publicOnly: boolean
@@ -74,28 +74,28 @@ export function createHandler(opts: Options) {
   const analyses = new Semaphore(opts.maxAnalyses ?? 8)
   const inflight = new Map<string, Promise<Cached>>()
 
-  // One analysis per username at a time; concurrent requests for the same name share it.
-  const run = (login: string) => {
-    const existing = inflight.get(login)
+  // A username/period pair shares work and cached results, never a different period.
+  const run = (login: string, days: PeriodDays, key: string) => {
+    const existing = inflight.get(key)
     if (existing) return existing
     const p = (async () => {
       const release = await analyses.acquire(QUEUE_WAIT)
       try {
         let timer: ReturnType<typeof setTimeout> | undefined
-        const work = opts.analyze ? opts.analyze(login) : analyze(opts.gh!.session(), login, { publicOnly: opts.publicOnly, maxPages: opts.maxPages })
+        const work = opts.analyze ? opts.analyze(login, days) : analyze(opts.gh!.session(), login, { publicOnly: opts.publicOnly, maxPages: opts.maxPages, days })
         const value = await Promise.race([
           work,
           new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new GitHubError("timeout", "Analysis took too long. Try again.", 30)), ANALYSIS_TIMEOUT))),
         ]).finally(() => clearTimeout(timer))
         const cached = { at: Math.floor(Date.now() / 1000), value }
-        await opts.store.set(login, cached)
+        await opts.store.set(key, cached)
         return cached
       } finally {
         release()
-        inflight.delete(login)
+        inflight.delete(key)
       }
     })()
-    inflight.set(login, p)
+    inflight.set(key, p)
     return p
   }
 
@@ -118,17 +118,23 @@ export function createHandler(opts: Options) {
     const valid = opts.provider === "gitlab" ? /^[a-z0-9_][a-z0-9_.-]{0,254}$/ : /^[a-z0-9-]{1,39}$/
     if (!valid.test(login)) return json({ error: `that's not a ${opts.provider === "gitlab" ? "GitLab" : "GitHub"} username`, code: "bad_login" }, 400)
 
-    const hit = await opts.store.get(login)
+    const rawDays = url.searchParams.get("days") ?? String(WINDOW_DAYS)
+    if (url.searchParams.getAll("days").length > 1 || !PERIOD_DAYS.some((d) => String(d) === rawDays)) {
+      return json({ error: "Choose a period of 7, 30, 90 or 365 days", code: "bad_period" }, 400, { "cache-control": "no-store" })
+    }
+    const days = Number(rawDays) as PeriodDays
+    const key = `periods/${days}/${login}`
+    const hit = await opts.store.get(key)
     const age = hit ? Date.now() / 1000 - hit.at : Infinity
     if (hit && age <= FRESH_FOR) return okResponse(hit, false, browserCache)
 
     // Joining an analysis someone else already started is free; only new work counts against the caller.
-    if (!inflight.has(login) && opts.allowFresh && !(await opts.allowFresh(req))) {
+    if (!inflight.has(key) && opts.allowFresh && !(await opts.allowFresh(req))) {
       return errorResponse(new GitHubError("rate_limited", "Slow down a little. Try again in a minute, or run it locally.", 60))
     }
 
     try {
-      return okResponse(await run(login), false, browserCache)
+      return okResponse(await run(login, days, key), false, browserCache)
     } catch (e) {
       // GitHub is unhappy but we remember an older answer: better than an error page.
       if (hit && age <= STALE_OK_FOR && !(e instanceof GitHubError && e.code === "not_found")) return okResponse(hit, true, browserCache)
