@@ -63,7 +63,7 @@ if (gl) {
   login ??= await gh!.session().get("/user").then((u) => u.login as string).catch(() => undefined)
 }
 const handler = createHandler({ gh, provider: gitlab ? "gitlab" : "github",
-  analyze: gl ? (login) => analyzeGitLab(gl, login, { publicOnly, maxPages: 10 }) : undefined,
+  analyze: gl ? (login, days) => analyzeGitLab(gl, login, { publicOnly, maxPages: 10, days }) : undefined,
   store: new MemoryStore(), html, publicOnly, browserCache: false, maxPages: 10 })
 
 const server = createServer(async (req, res) => {

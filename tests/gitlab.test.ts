@@ -166,3 +166,72 @@ test("local responses bypass HTTP caches while the public site keeps caching", a
   assert.match((await handler(new Request("https://example.com/"))).headers.get("cache-control")!, /public/)
   assert.match((await handler(new Request("https://example.com/api/abzy"))).headers.get("cache-control")!, /public, max-age=600/)
 })
+
+test("all four periods reach GitHub and GitLab date filters", async (t) => {
+  t.mock.method(Date, "now", () => Date.UTC(2026, 8, 20, 12))
+  const { analyze } = await import("../src/analyze.ts")
+  const periods = [[7, "2026-09-13"], [30, "2026-08-21"], [90, "2026-06-22"], [365, "2025-09-20"]] as const
+  for (const [days, since] of periods) {
+    const githubPaths: string[] = []
+    const gh = { authenticated: false, async get(path: string) {
+      githubPaths.push(path)
+      if (path === "/users/example") return { login: "example", avatar_url: "" }
+      if (path.startsWith("/search/")) return { total_count: 0, items: [] }
+      return []
+    } } as unknown as import("../src/github.ts").Session
+    const github = await analyze(gh, "example", { publicOnly: true, maxPages: 1, days })
+    assert.deepEqual(github.window, { days, since })
+    const searches = githubPaths.filter((p) => p.startsWith("/search/"))
+    assert.equal(searches.length, 3)
+    assert.ok(searches.every((p) => p.includes(`>=${since}`)))
+    const gitlabPaths: string[] = []
+    const base = api()
+    const gitlab = await analyzeGitLab({ async get(path) {
+      gitlabPaths.push(path)
+      return base.get(path)
+    } }, "a.b_c", { publicOnly: false, maxPages: 1, days })
+    assert.deepEqual(gitlab.window, { days, since })
+    const lists = gitlabPaths.filter((p) => p.startsWith("/merge_requests?") || p.startsWith("/issues?"))
+    assert.equal(lists.length, 2)
+    assert.ok(lists.every((p) => p.includes(`created_after=${since}T00:00:00Z`)))
+  }
+})
+
+test("handler isolates periods in concurrent analyses and cache, with a 90-day default", async () => {
+  const calls: number[] = []
+  const store = new MemoryStore()
+  // Use the fixture's actual username; a legacy username-only cache entry must not be reused.
+  const example = createHandler({ provider: "gitlab", store, html: "", publicOnly: false, maxPages: 1,
+    analyze: async (_login, days) => {
+      calls.push(days)
+      await new Promise((resolve) => setImmediate(resolve))
+      return analyzeGitLab(api(), "a.b_c", { publicOnly: false, maxPages: 1, days })
+    } })
+  await store.set("a.b_c", { at: Date.now() / 1000, value: await analyzeGitLab(api(), "a.b_c", { publicOnly: false, maxPages: 1 }) })
+  const get = (query: string) => example(new Request(`http://localhost/api/a.b_c${query}`)).then((r) => r.json()) as Promise<any>
+  const results = await Promise.all([get("?days=7"), get("?days=365"), get("?days=7"), get(""), get("?days=90")])
+  assert.deepEqual(results.map((r) => r.window.days), [7, 365, 7, 90, 90])
+  assert.deepEqual(calls.sort((a, b) => a - b), [7, 90, 365])
+  await Promise.all([get("?days=7"), get("?days=365"), get("")])
+  assert.equal(calls.length, 3)
+  for (const query of ["?days=", "?days=8", "?days=-7", "?days=07", "?days=7.0", "?days=Infinity", "?days=7&days=365"]) {
+    const res = await example(new Request(`http://localhost/api/a.b_c${query}`))
+    assert.equal(res.status, 400, query)
+    assert.equal((await res.json() as any).code, "bad_period")
+  }
+  assert.equal(calls.length, 3)
+})
+
+test("stale fallback never substitutes an analysis from a different period", async () => {
+  const { GitHubError } = await import("../src/github.ts")
+  const store = new MemoryStore()
+  const value = await analyzeGitLab(api(), "a.b_c", { publicOnly: false, maxPages: 1, days: 7 })
+  await store.set("periods/7/a.b_c", { at: Date.now() / 1000 - 7200, value })
+  const handler = createHandler({ provider: "gitlab", store, html: "", publicOnly: false, maxPages: 1,
+    analyze: async () => { throw new GitHubError("upstream", "Unavailable") } })
+  const stale = await handler(new Request("http://localhost/api/a.b_c?days=7"))
+  const result = await stale.json() as any
+  assert.equal(result.stale, true)
+  assert.equal(result.window.days, 7)
+  assert.equal((await handler(new Request("http://localhost/api/a.b_c?days=365"))).status, 502)
+})

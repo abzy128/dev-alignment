@@ -26,6 +26,8 @@ type Meta = { stars: number; forks: number; parent?: string }
 // Quota budget per analysis, roughly: 3–9 search calls (the scarce one: 30/min/token),
 // ~5 REST calls, ~15 GraphQL calls. Everything fan-out shaped goes through aliased GraphQL batches.
 export const WINDOW_DAYS = 90
+export const PERIOD_DAYS = [7, 30, 90, 365] as const
+export type PeriodDays = (typeof PERIOD_DAYS)[number]
 const DEPENDENCY_SOURCE_REPOS = 12
 const DEPENDENCY_CONCURRENCY = 2
 const REPO_META_LOOKUPS = 60
@@ -135,11 +137,12 @@ async function sponsoring(gh: Session, login: string, publicOnly: boolean) {
  */
 export type AnalyzeOptions = {
   publicOnly: boolean
+  days?: PeriodDays
   /** Search pages per kind (100 each). The shared public site uses 3; locally on your own quota, 10 = GitHub's max. */
   maxPages: number
 }
 
-export async function analyze(gh: Session, rawLogin: string, { publicOnly, maxPages }: AnalyzeOptions): Promise<Analysis> {
+export async function analyze(gh: Session, rawLogin: string, { publicOnly, maxPages, days = WINDOW_DAYS }: AnalyzeOptions): Promise<Analysis> {
   const vis = publicOnly ? "+is:public" : ""
   const orgType = publicOnly ? "&type=public" : "&type=all"
   // /users/{x}/repos is public-only even for yourself; local mode wants your private repos too.
@@ -175,7 +178,7 @@ export async function analyze(gh: Session, rawLogin: string, { publicOnly, maxPa
     if (!depSources.includes(r.full_name)) depSources.push(r.full_name)
   }
 
-  const since = new Date(Date.now() - WINDOW_DAYS * 864e5).toISOString().slice(0, 10)
+  const since = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10)
   const [prs, issues, commits, sponsors, deps] = await Promise.all([
     search(gh, `issues?q=type:pr+author:${login}${vis}+created:>=${since}&advanced_search=true`, "created", maxPages),
     search(gh, `issues?q=type:issue+author:${login}${vis}+created:>=${since}&advanced_search=true`, "created", maxPages),
@@ -246,7 +249,7 @@ export async function analyze(gh: Session, rawLogin: string, { publicOnly, maxPa
     items,
     repos,
     publicOnly,
-    window: { days: WINDOW_DAYS, since },
+    window: { days, since },
     sampled: {
       prs: { total: prs.total, fetched: prs.items.length },
       issues: { total: issues.total, fetched: issues.items.length },

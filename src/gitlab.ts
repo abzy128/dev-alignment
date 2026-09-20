@@ -50,11 +50,11 @@ async function list(api: GitLabAPI, path: string, maxPages: number) {
   return { items, total: total ?? items.length, truncated }
 }
 
-export async function analyzeGitLab(api: GitLabAPI, rawLogin: string, { publicOnly, maxPages }: AnalyzeOptions): Promise<Analysis> {
+export async function analyzeGitLab(api: GitLabAPI, rawLogin: string, { publicOnly, maxPages, days = WINDOW_DAYS }: AnalyzeOptions): Promise<Analysis> {
   const { data: users } = await api.get(`/users?username=${encodeURIComponent(rawLogin)}`)
   const user = users.find((u: any) => u.username.toLowerCase() === rawLogin.toLowerCase())
   if (!user) throw new GitHubError("not_found", `${rawLogin} not found on GitLab`)
-  const since = new Date(Date.now() - WINDOW_DAYS * 864e5).toISOString().slice(0, 10)
+  const since = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10)
   const query = `scope=all&author_id=${user.id}&created_after=${since}T00:00:00Z&order_by=created_at&sort=desc`
   const [mrs, issues] = await Promise.all([
     list(api, `/merge_requests?${query}`, maxPages),
@@ -89,7 +89,7 @@ export async function analyzeGitLab(api: GitLabAPI, rawLogin: string, { publicOn
     "Group namespaces count as company/team work regardless of your role. This is a heuristic: personal groups and open-source groups also count as teams."]
   if (mrs.truncated || issues.truncated) notes.push("GitLab results reached the page limit; this analysis is a sample.")
   return { login: user.username, avatar: user.avatar_url, provider: "gitlab", notes, orgs: [...groups],
-    items: [...prItems, ...issueItems], repos, publicOnly, window: { days: WINDOW_DAYS, since },
+    items: [...prItems, ...issueItems], repos, publicOnly, window: { days, since },
     sampled: { prs: { total: publicOnly ? prItems.length : mrs.total, fetched: prItems.length },
       issues: { total: publicOnly ? issueItems.length : issues.total, fetched: issueItems.length },
       commits: { total: 0, fetched: 0 }, sponsoring: 0 } }

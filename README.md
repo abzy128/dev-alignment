@@ -14,7 +14,12 @@ runs the *same* UI on `localhost:3000` against your own `gh auth login` (or `GIT
 
 ## The algorithm
 
-Every PR, issue and commit you authored in the **last 90 days** (up to 300 of each on the site, 1000 via npx), plus everyone
+Choose **1 week, 1 month, 3 months, or 1 year** in the period selector. These use 7, 30, 90,
+or 365 days, with **3 months (90 days)** as the default. Changing the period fetches a new
+analysis and saves the selection in the URL (`?u=username&days=7`), so reloads and shared links
+preserve it. Date cutoffs start at midnight UTC; these are day-based windows rather than calendar months.
+
+Every PR, issue and commit you authored in the **selected period** (up to 300 of each on the site, 1000 via npx), plus everyone
 you sponsor, gets a **selflessness** score from 0 to 1 based on *who it was for*:
 
 | target | selflessness |
@@ -30,7 +35,13 @@ So a hobby repo of yours nobody uses is pure selfish, but if your personal proje
 used package, working on it counts as (mostly) selfless. Same for working at Electron.
 
 Alignment = weighted mean, with PR 1 · issue 0.5 · commit 0.25 · sponsor 2. Commits on your fork
-of X count as X. All weights are sliders in the UI. The sparkline is a 14-day rolling mean.
+of X count as X. All weights are sliders in the UI. The sparkline spans the selected period
+with a 14-day rolling mean (7 days for the 1-week view). Current sponsorships remain a bonus
+signal independent of the selected period; dependency and popularity metadata are current snapshots.
+
+Each period has its own cache and in-flight deduplication key. The API accepts
+`/api/username?days=7|30|90|365` (one value); omitting `days` uses 90 and unsupported values return 400.
+Fetch limits still apply to longer periods, and the UI reports capped samples.
 
 - **Yours** = you, orgs you're a public member of, and any `@org` in your profile company/bio.
 - **Upstream** = GitHub's own dependency graph (npm, NuGet, Actions, pip, cargo, go…) for a dozen of
@@ -104,7 +115,7 @@ TLS settings and host resolution. `--hostname` explicitly selects a self-hosted 
 otherwise glab uses its normal current-repository/default host selection. GitHub remains the default.
 `--public`, `--port` and `--no-open` work with either provider.
 
-GitLab mode counts authored **merge requests and issues** created in the last 90 days,
+GitLab mode counts authored **merge requests and issues** created in the selected period,
 up to 1,000 of each before visibility filtering. Public mode excludes non-public projects and
 confidential issues. Classification uses GitLab's project namespace type, independent of membership
 or role, and works for other users too:
